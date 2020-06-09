@@ -1,4 +1,4 @@
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
-    git: Vec<String>,
+    pub git: Vec<String>,
 }

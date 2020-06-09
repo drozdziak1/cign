@@ -8,6 +8,7 @@ mod config;
 
 use clap::{App, Arg, ArgMatches, SubCommand};
 use failure::format_err;
+use git2::Repository;
 use log::LevelFilter;
 
 use std::{env, fs::File, io::Read};
@@ -47,8 +48,25 @@ fn main() -> Result<(), ErrBox> {
 
     match main_matches.subcommand() {
         ("add", Some(matches)) => {}
-        ("", None) => {}
+        ("", None) => visit_all_repos(&main_matches, &cfg)?,
         _ => unreachable!(),
+    }
+
+    Ok(())
+}
+
+fn visit_all_repos(matches: &ArgMatches, cfg: &Config) -> Result<(), ErrBox> {
+    for dir in &cfg.git {
+	let dir: &str = &shellexpand::full(dir)?;
+
+        debug!("Visiting {}", dir);
+        let repo = match Repository::discover(dir) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!("{}: Could not open repo: {}", dir, e);
+                continue;
+            }
+        };
     }
 
     Ok(())
