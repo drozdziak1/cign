@@ -1,0 +1,18 @@
+[package]
+name = "cign"
+version = "0.1.0"
+authors = ["Stan Drozd (nixie-dust) <drozdziak1@gmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+git2 = "0.13.6"
+toml = "0.5.6"
+serde = "1.0.111"
+serde_derive = "1.0.111"
+clap = "2.33.1"
+failure = "0.1.8"
+shellexpand = "2.0.0"
+log = "0.4.8"
+env_logger = "0.7.1"
