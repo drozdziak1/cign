@@ -8,10 +8,16 @@ mod config;
 
 use clap::{App, Arg, ArgMatches, SubCommand};
 use failure::format_err;
-use git2::Repository;
+use git2::{Repository, RepositoryState, StatusOptions};
 use log::LevelFilter;
 
-use std::{env, fs::File, io::Read};
+use std::{
+    env,
+    fs::{self, File, OpenOptions},
+    io::{Read, Write},
+    path::Path,
+    process,
+};
 
 use config::Config;
 
@@ -44,32 +50,99 @@ fn main() -> Result<(), ErrBox> {
         )
         .get_matches();
 
-    let cfg = load_cfg(&main_matches)?;
+    let mut cfg = load_cfg(&main_matches)?;
 
     match main_matches.subcommand() {
-        ("add", Some(matches)) => {}
-        ("", None) => visit_all_repos(&main_matches, &cfg)?,
+        ("add", Some(matches)) => {
+            handle_add(&main_matches, matches, &mut cfg)?;
+        }
+        ("", None) => {
+            if visit_all_repos(&main_matches, &cfg)? {
+                println!("OK.");
+            } else {
+                process::exit(1);
+            }
+        }
         _ => unreachable!(),
     }
 
     Ok(())
 }
 
-fn visit_all_repos(matches: &ArgMatches, cfg: &Config) -> Result<(), ErrBox> {
-    for dir in &cfg.git {
-	let dir: &str = &shellexpand::full(dir)?;
+fn handle_add(
+    main_matches: &ArgMatches,
+    matches: &ArgMatches,
+    cfg: &mut Config,
+) -> Result<(), ErrBox> {
+    let dir: &str = &shellexpand::full(
+        matches
+            .value_of("DIR")
+            .ok_or_else(|| format_err!("INTERNAL: Could not get dir to add"))?,
+    )?;
 
-        debug!("Visiting {}", dir);
-        let repo = match Repository::discover(dir) {
+    let p = fs::canonicalize(Path::new(dir))?;
+    if p.is_dir() {
+        cfg.git.insert(
+            p.to_str()
+                .ok_or_else(|| format_err!("INTERNAL: Could not convert path back to string"))?
+                .to_owned(),
+        );
+        save_cfg(main_matches, cfg)?;
+        println!("Adding {}", p.to_str().unwrap());
+    } else {
+        return Err(format_err!("{} is not a directory", dir).into());
+    }
+    Ok(())
+}
+
+/// Returns false if any of the configured repos is dirty
+fn visit_all_repos(_main_matches: &ArgMatches, cfg: &Config) -> Result<bool, ErrBox> {
+    let mut clean = true;
+
+    for dir in &cfg.git {
+        let expanded_dir: &str = &shellexpand::full(dir)?;
+
+        debug!("Visiting {}", expanded_dir);
+        let repo = match Repository::discover(expanded_dir) {
             Ok(r) => r,
             Err(e) => {
                 warn!("{}: Could not open repo: {}", dir, e);
                 continue;
             }
         };
+
+        let state = repo.state();
+        let change_count = repo
+            .statuses(Some(StatusOptions::new().include_ignored(false)))?
+            .iter()
+            .inspect(|entry| trace!("{}: {:?}: status {:?}", dir, entry.path(), entry.status()))
+            .count();
+
+        let is_unclean = state != RepositoryState::Clean;
+        let has_changes = change_count > 0;
+
+        if has_changes || is_unclean {
+            clean = false;
+            print!("{}: ", dir);
+
+            if has_changes {
+                print!(
+                    "{} uncommitted change{}{}",
+                    change_count,
+                    if change_count == 1 { "" } else { "s" },
+                    if is_unclean { ", " } else { "" }
+                );
+            }
+
+            if is_unclean {
+                print!("non-clean state {:?}", state);
+            }
+
+            println!("");
+        }
     }
 
-    Ok(())
+    Ok(clean)
 }
 
 /// Init logging at info level
@@ -99,4 +172,17 @@ fn load_cfg(matches: &ArgMatches) -> Result<Config, ErrBox> {
     debug!("Config:\n{:#?}", cfg);
 
     Ok(cfg)
+}
+
+fn save_cfg(matches: &ArgMatches, cfg: &Config) -> Result<(), ErrBox> {
+    let fname: &str = &shellexpand::full(
+        matches
+            .value_of("config")
+            .ok_or_else(|| format_err!("INTERNAL: could not obtain config path"))?,
+    )?;
+
+    let mut f = OpenOptions::new().write(true).open(fname)?;
+
+    f.write_all(toml::to_vec(cfg)?.as_slice())?;
+    Ok(())
 }
