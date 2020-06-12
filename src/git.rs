@@ -1,7 +1,11 @@
 use failure::{format_err, Error};
 use git2::{Repository, RepositoryState, Status, StatusOptions};
 
-pub fn check_repo(repo: &Repository) -> Result<GitCheckResult, Error> {
+use std::path::Path;
+
+pub fn check_dir<P: AsRef<Path>>(dir: P) -> Result<GitCheckResult, Error> {
+    let repo = Repository::discover(dir)?;
+
     let state = repo.state();
     let statuses = repo
         .statuses(Some(StatusOptions::new().include_ignored(false)))?

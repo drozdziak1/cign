@@ -8,12 +8,12 @@ mod config;
 mod git;
 
 use clap::{App, Arg, ArgMatches, SubCommand};
-use failure::format_err;
-use git2::Repository;
+use dialoguer::Confirm;
+use failure::{format_err, Error};
 use log::LevelFilter;
 
 use std::{
-    env,
+    env, ffi,
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     path::Path,
@@ -21,7 +21,7 @@ use std::{
 };
 
 use config::Config;
-use git::check_repo;
+use git::check_dir;
 
 pub type ErrBox = Box<dyn std::error::Error>;
 
@@ -29,6 +29,8 @@ static DEFAULT_CIGN_CONFIG_PATH: &'static str = "~/.cign.toml";
 
 fn main() -> Result<(), ErrBox> {
     init_log();
+
+    let current_shell = env::var("SHELL")?;
 
     let main_matches = App::new(env!("CARGO_PKG_NAME"))
         .about("cign = Can I Go Now? cign is a friendly reminder program for your unpushed code.")
@@ -46,7 +48,14 @@ fn main() -> Result<(), ErrBox> {
                 .help("Print more info to stdout")
                 .short("v")
                 .long("verbose")
-                .takes_value(false)
+                .takes_value(false),
+        )
+        .arg(
+            Arg::with_name("no-skip")
+                .help("Fail on errors instead of skipping when possible")
+                .short("s")
+                .long("no-skip")
+                .takes_value(false),
         )
         .subcommand(
             SubCommand::with_name("add")
@@ -57,6 +66,15 @@ fn main() -> Result<(), ErrBox> {
                         .help("The directory to add"),
                 ),
         )
+        .subcommand(
+            SubCommand::with_name("fix")
+                .about("Run CMD in each dir to let the user get it back to clean state")
+                .arg(
+                    Arg::with_name("CMD")
+                        .default_value(&current_shell)
+                        .help("The program to run in each failing directory"),
+                ),
+        )
         .get_matches();
 
     let mut cfg = load_cfg(&main_matches)?;
@@ -65,9 +83,12 @@ fn main() -> Result<(), ErrBox> {
         ("add", Some(matches)) => {
             handle_add(&main_matches, matches, &mut cfg)?;
         }
+        ("fix", Some(matches)) => {
+            handle_fix(&main_matches, matches, &mut cfg)?;
+        }
         ("", None) => {
             if visit_all_repos(&main_matches, &cfg)? {
-                println!("OK.");
+                println!("OK");
             } else {
                 process::exit(1);
             }
@@ -82,7 +103,7 @@ fn handle_add(
     main_matches: &ArgMatches,
     matches: &ArgMatches,
     cfg: &mut Config,
-) -> Result<(), ErrBox> {
+) -> Result<(), Error> {
     let dir: &str = &shellexpand::full(
         matches
             .value_of("DIR")
@@ -104,26 +125,134 @@ fn handle_add(
     Ok(())
 }
 
+/// Traverses `dirs_iter` and returns an expanded dir vector with all that failed the dir checks.
+fn get_failing_expanded_dirs<'a>(
+    dirs_iter: impl Iterator<Item = &'a String>,
+    no_skip: bool,
+) -> Result<Vec<String>, Error> {
+    let mut ret = Vec::new();
+    for dir in dirs_iter {
+        let expanded_dir: String = match &shellexpand::full(&dir) {
+            Ok(d) => d.as_ref().to_owned(),
+            Err(e) => {
+                if no_skip {
+                    return Err(format_err!("{}: Could not expand dir: {}", dir, e));
+                } else {
+                    warn!("{}: Skipping because expanding the path failed: {}", dir, e);
+                    continue;
+                }
+            }
+        };
+
+        match check_dir(&expanded_dir) {
+            Ok(chk_res) => {
+                if !chk_res.is_all_good() {
+                    ret.push(expanded_dir);
+                }
+            }
+            Err(e) => {
+                if no_skip {
+                    return Err(e);
+                } else {
+                    warn!(
+                        "{}: Skipping because checking failed unexpectedly: {}",
+                        dir, e
+                    );
+                    continue;
+                }
+            }
+        }
+    }
+    Ok(ret)
+}
+
+fn handle_fix(
+    main_matches: &ArgMatches,
+    matches: &ArgMatches,
+    cfg: &mut Config,
+) -> Result<(), Error> {
+    let cmd = matches
+        .value_of("CMD")
+        .ok_or_else(|| format_err!("INTERNAL: could not get CMD"))?;
+
+    let failing_expanded_dirs =
+        get_failing_expanded_dirs(cfg.git.iter(), main_matches.is_present("no-skip"))?;
+
+    // Save current dir
+    let cwd = env::current_dir()?;
+
+    // Go through each failing dir executing CMD
+    for (idx, expanded_dir) in failing_expanded_dirs.iter().enumerate() {
+        loop {
+            // Change to the directory
+            env::set_current_dir(Path::new(&expanded_dir))?;
+
+            println!(
+                "{}/{}: Fixing {}",
+                idx + 1,
+                failing_expanded_dirs.len(),
+                expanded_dir
+            );
+
+            // Run the command
+            let command_result: libc::c_int;
+            unsafe {
+                command_result = libc::WEXITSTATUS(libc::system(ffi::CString::new(cmd)?.as_ptr()));
+            }
+
+            if command_result != libc::EXIT_SUCCESS {
+                warn!(
+                    "{}: command exited with code {}",
+                    expanded_dir, command_result
+                );
+            }
+
+            // Re-run the check
+            let check_res = check_dir(expanded_dir)?;
+
+            // Loop back if it's still failing and they want to retry
+            if !check_res.is_all_good() {
+                if Confirm::new()
+                    .with_prompt(format!(
+                        "{}: still failing ({}). Retry?",
+                        expanded_dir,
+                        check_res.describe().join(", "),
+                    ))
+                    .interact()?
+                {
+                    continue;
+                }
+            }
+
+            break;
+        }
+
+        println!(
+            "{}/{}: Leaving {}",
+            idx + 1,
+            failing_expanded_dirs.len(),
+            expanded_dir
+        );
+    }
+
+    // Restore previous working directory
+    env::set_current_dir(cwd)?;
+
+    Ok(())
+}
+
 /// Returns false if any of the configured repos is dirty
-fn visit_all_repos(main_matches: &ArgMatches, cfg: &Config) -> Result<bool, ErrBox> {
+fn visit_all_repos(main_matches: &ArgMatches, cfg: &Config) -> Result<bool, Error> {
     let mut clean = true;
 
     for dir in &cfg.git {
         let expanded_dir: &str = &shellexpand::full(dir)?;
 
         debug!("Visiting {}", expanded_dir);
-        let repo = match Repository::discover(expanded_dir) {
-            Ok(r) => r,
-            Err(e) => {
-                warn!("{}: Could not open repo: {}", dir, e);
-                clean = false;
-                continue;
-            }
-        };
 
-        let check_result = check_repo(&repo)?;
+        let check_result = check_dir(expanded_dir)?;
 
-        if !check_result.is_all_good() || main_matches.is_present("verbose"){
+        if !check_result.is_all_good() || main_matches.is_present("verbose") {
             println!("{}: {}", dir, check_result.describe().join(" | "));
         }
 
@@ -143,7 +272,7 @@ fn init_log() {
     }
 }
 
-fn load_cfg(matches: &ArgMatches) -> Result<Config, ErrBox> {
+fn load_cfg(matches: &ArgMatches) -> Result<Config, Error> {
     let fname: &str = &shellexpand::full(
         matches
             .value_of("config")
@@ -162,7 +291,7 @@ fn load_cfg(matches: &ArgMatches) -> Result<Config, ErrBox> {
     Ok(cfg)
 }
 
-fn save_cfg(matches: &ArgMatches, cfg: &Config) -> Result<(), ErrBox> {
+fn save_cfg(matches: &ArgMatches, cfg: &Config) -> Result<(), Error> {
     let fname: &str = &shellexpand::full(
         matches
             .value_of("config")
