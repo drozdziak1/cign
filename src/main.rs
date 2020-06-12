@@ -5,10 +5,11 @@ extern crate log;
 extern crate serde_derive;
 
 mod config;
+mod git;
 
 use clap::{App, Arg, ArgMatches, SubCommand};
 use failure::format_err;
-use git2::{Repository, RepositoryState, StatusOptions};
+use git2::Repository;
 use log::LevelFilter;
 
 use std::{
@@ -20,6 +21,7 @@ use std::{
 };
 
 use config::Config;
+use git::check_repo;
 
 pub type ErrBox = Box<dyn std::error::Error>;
 
@@ -38,6 +40,13 @@ fn main() -> Result<(), ErrBox> {
                 .long("config")
                 .value_name("CIGN_CONFIG")
                 .default_value(DEFAULT_CIGN_CONFIG_PATH),
+        )
+        .arg(
+            Arg::with_name("verbose")
+                .help("Print more info to stdout")
+                .short("v")
+                .long("verbose")
+                .takes_value(false)
         )
         .subcommand(
             SubCommand::with_name("add")
@@ -96,7 +105,7 @@ fn handle_add(
 }
 
 /// Returns false if any of the configured repos is dirty
-fn visit_all_repos(_main_matches: &ArgMatches, cfg: &Config) -> Result<bool, ErrBox> {
+fn visit_all_repos(main_matches: &ArgMatches, cfg: &Config) -> Result<bool, ErrBox> {
     let mut clean = true;
 
     for dir in &cfg.git {
@@ -107,39 +116,18 @@ fn visit_all_repos(_main_matches: &ArgMatches, cfg: &Config) -> Result<bool, Err
             Ok(r) => r,
             Err(e) => {
                 warn!("{}: Could not open repo: {}", dir, e);
+                clean = false;
                 continue;
             }
         };
 
-        let state = repo.state();
-        let change_count = repo
-            .statuses(Some(StatusOptions::new().include_ignored(false)))?
-            .iter()
-            .inspect(|entry| trace!("{}: {:?}: status {:?}", dir, entry.path(), entry.status()))
-            .count();
+        let check_result = check_repo(&repo)?;
 
-        let is_unclean = state != RepositoryState::Clean;
-        let has_changes = change_count > 0;
-
-        if has_changes || is_unclean {
-            clean = false;
-            print!("{}: ", dir);
-
-            if has_changes {
-                print!(
-                    "{} uncommitted change{}{}",
-                    change_count,
-                    if change_count == 1 { "" } else { "s" },
-                    if is_unclean { ", " } else { "" }
-                );
-            }
-
-            if is_unclean {
-                print!("non-clean state {:?}", state);
-            }
-
-            println!("");
+        if !check_result.is_all_good() || main_matches.is_present("verbose"){
+            println!("{}: {}", dir, check_result.describe().join(" | "));
         }
+
+        clean = clean && check_result.is_all_good();
     }
 
     Ok(clean)
