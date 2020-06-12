@@ -4,19 +4,18 @@ extern crate log;
 #[macro_use]
 extern crate serde_derive;
 
+mod command;
 mod config;
 mod git;
 
 use clap::{App, Arg, ArgMatches, SubCommand};
-use dialoguer::Confirm;
 use failure::{format_err, Error};
 use log::LevelFilter;
 
 use std::{
-    env, ffi,
-    fs::{self, File, OpenOptions},
+    env,
+    fs::{File, OpenOptions},
     io::{Read, Write},
-    path::Path,
     process,
 };
 
@@ -59,7 +58,8 @@ fn main() -> Result<(), ErrBox> {
         )
         .subcommand(
             SubCommand::with_name("add")
-                .about("Add a new directory to the watchlist")
+                .alias("a")
+                .about("Add a new directory to the config")
                 .arg(
                     Arg::with_name("DIR")
                         .default_value(".")
@@ -67,13 +67,29 @@ fn main() -> Result<(), ErrBox> {
                 ),
         )
         .subcommand(
+            SubCommand::with_name("del")
+                .alias("d")
+                .about("Removes a directory from the config")
+                .arg(
+                    Arg::with_name("DIR")
+                        .default_value(".")
+                        .help("The directory to delete"),
+                ),
+        )
+        .subcommand(
             SubCommand::with_name("fix")
+                .alias("f")
                 .about("Run CMD in each dir to let the user get it back to clean state")
                 .arg(
                     Arg::with_name("CMD")
                         .default_value(&current_shell)
-                        .help("The program to run in each failing directory"),
+                        .help("The command to run in each failing directory"),
                 ),
+        )
+        .subcommand(
+            SubCommand::with_name("list")
+                .alias("l")
+                .about("List all configured directories"),
         )
         .get_matches();
 
@@ -81,10 +97,16 @@ fn main() -> Result<(), ErrBox> {
 
     match main_matches.subcommand() {
         ("add", Some(matches)) => {
-            handle_add(&main_matches, matches, &mut cfg)?;
+            command::handle_add(&main_matches, matches, &mut cfg)?;
+        }
+        ("del", Some(matches)) => {
+            command::handle_del(&main_matches, matches, &mut cfg)?;
         }
         ("fix", Some(matches)) => {
-            handle_fix(&main_matches, matches, &mut cfg)?;
+            command::handle_fix(&main_matches, matches, &mut cfg)?;
+        }
+        ("list", Some(_)) => {
+            command::handle_list(&mut cfg);
         }
         ("", None) => {
             if visit_all_repos(&main_matches, &cfg)? {
@@ -99,34 +121,8 @@ fn main() -> Result<(), ErrBox> {
     Ok(())
 }
 
-fn handle_add(
-    main_matches: &ArgMatches,
-    matches: &ArgMatches,
-    cfg: &mut Config,
-) -> Result<(), Error> {
-    let dir: &str = &shellexpand::full(
-        matches
-            .value_of("DIR")
-            .ok_or_else(|| format_err!("INTERNAL: Could not get dir to add"))?,
-    )?;
-
-    let p = fs::canonicalize(Path::new(dir))?;
-    if p.is_dir() {
-        cfg.git.insert(
-            p.to_str()
-                .ok_or_else(|| format_err!("INTERNAL: Could not convert path back to string"))?
-                .to_owned(),
-        );
-        save_cfg(main_matches, cfg)?;
-        println!("Adding {}", p.to_str().unwrap());
-    } else {
-        return Err(format_err!("{} is not a directory", dir).into());
-    }
-    Ok(())
-}
-
 /// Traverses `dirs_iter` and returns an expanded dir vector with all that failed the dir checks.
-fn get_failing_expanded_dirs<'a>(
+pub fn get_failing_expanded_dirs<'a>(
     dirs_iter: impl Iterator<Item = &'a String>,
     no_skip: bool,
 ) -> Result<Vec<String>, Error> {
@@ -166,81 +162,6 @@ fn get_failing_expanded_dirs<'a>(
     Ok(ret)
 }
 
-fn handle_fix(
-    main_matches: &ArgMatches,
-    matches: &ArgMatches,
-    cfg: &mut Config,
-) -> Result<(), Error> {
-    let cmd = matches
-        .value_of("CMD")
-        .ok_or_else(|| format_err!("INTERNAL: could not get CMD"))?;
-
-    let failing_expanded_dirs =
-        get_failing_expanded_dirs(cfg.git.iter(), main_matches.is_present("no-skip"))?;
-
-    // Save current dir
-    let cwd = env::current_dir()?;
-
-    // Go through each failing dir executing CMD
-    for (idx, expanded_dir) in failing_expanded_dirs.iter().enumerate() {
-        loop {
-            // Change to the directory
-            env::set_current_dir(Path::new(&expanded_dir))?;
-
-            println!(
-                "{}/{}: Fixing {}",
-                idx + 1,
-                failing_expanded_dirs.len(),
-                expanded_dir
-            );
-
-            // Run the command
-            let command_result: libc::c_int;
-            unsafe {
-                command_result = libc::WEXITSTATUS(libc::system(ffi::CString::new(cmd)?.as_ptr()));
-            }
-
-            if command_result != libc::EXIT_SUCCESS {
-                warn!(
-                    "{}: command exited with code {}",
-                    expanded_dir, command_result
-                );
-            }
-
-            // Re-run the check
-            let check_res = check_dir(expanded_dir)?;
-
-            // Loop back if it's still failing and they want to retry
-            if !check_res.is_all_good() {
-                if Confirm::new()
-                    .with_prompt(format!(
-                        "{}: still failing ({}). Retry?",
-                        expanded_dir,
-                        check_res.describe().join(", "),
-                    ))
-                    .interact()?
-                {
-                    continue;
-                }
-            }
-
-            break;
-        }
-
-        println!(
-            "{}/{}: Leaving {}",
-            idx + 1,
-            failing_expanded_dirs.len(),
-            expanded_dir
-        );
-    }
-
-    // Restore previous working directory
-    env::set_current_dir(cwd)?;
-
-    Ok(())
-}
-
 /// Returns false if any of the configured repos is dirty
 fn visit_all_repos(main_matches: &ArgMatches, cfg: &Config) -> Result<bool, Error> {
     let mut clean = true;
@@ -272,7 +193,8 @@ fn init_log() {
     }
 }
 
-fn load_cfg(matches: &ArgMatches) -> Result<Config, Error> {
+/// Load config from the path specified in `matches`.
+pub fn load_cfg(matches: &ArgMatches) -> Result<Config, Error> {
     let fname: &str = &shellexpand::full(
         matches
             .value_of("config")
@@ -291,7 +213,8 @@ fn load_cfg(matches: &ArgMatches) -> Result<Config, Error> {
     Ok(cfg)
 }
 
-fn save_cfg(matches: &ArgMatches, cfg: &Config) -> Result<(), Error> {
+/// Save `cfg` to the path specified in `matches`.
+pub fn save_cfg(matches: &ArgMatches, cfg: &Config) -> Result<(), Error> {
     let fname: &str = &shellexpand::full(
         matches
             .value_of("config")

@@ -1,3 +1,5 @@
+//! Git directory checking helpers
+
 use failure::{format_err, Error};
 use git2::{Repository, RepositoryState, Status, StatusOptions};
 
