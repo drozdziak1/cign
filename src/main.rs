@@ -221,7 +221,7 @@ pub fn save_cfg(matches: &ArgMatches, cfg: &Config) -> Result<(), Error> {
             .ok_or_else(|| format_err!("INTERNAL: could not obtain config path"))?,
     )?;
 
-    let mut f = OpenOptions::new().write(true).open(fname)?;
+    let mut f = OpenOptions::new().write(true).truncate(true).open(fname)?;
 
     f.write_all(toml::to_vec(cfg)?.as_slice())?;
     Ok(())
