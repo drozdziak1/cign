@@ -6,6 +6,7 @@ extern crate serde_derive;
 
 mod command;
 mod config;
+mod dir;
 mod git;
 
 use clap::{App, Arg, ArgMatches, SubCommand};
@@ -20,7 +21,7 @@ use std::{
 };
 
 use config::Config;
-use git::check_dir;
+use git::check_repo_in_dir;
 
 pub type ErrBox = Box<dyn std::error::Error>;
 
@@ -91,9 +92,14 @@ fn main() -> Result<(), ErrBox> {
                 .alias("l")
                 .about("List all configured directories"),
         )
+        .subcommand(
+            SubCommand::with_name("refresh")
+                .alias("r")
+                .about("Fetch upstream refs for every repo"),
+        )
         .get_matches();
 
-    let mut cfg = load_cfg(&main_matches)?;
+    let mut cfg = load_cfg_from_matches(&main_matches)?;
 
     match main_matches.subcommand() {
         ("add", Some(matches)) => {
@@ -108,6 +114,9 @@ fn main() -> Result<(), ErrBox> {
         ("list", Some(_)) => {
             command::handle_list(&mut cfg);
         }
+        ("refresh", Some(_)) => {
+            command::handle_refresh(&mut cfg)?;
+        }
         ("", None) => {
             if visit_all_repos(&main_matches, &cfg)? {
                 println!("OK");
@@ -121,47 +130,6 @@ fn main() -> Result<(), ErrBox> {
     Ok(())
 }
 
-/// Traverses `dirs_iter` and returns an expanded dir vector with all that failed the dir checks.
-pub fn get_failing_expanded_dirs<'a>(
-    dirs_iter: impl Iterator<Item = &'a String>,
-    no_skip: bool,
-) -> Result<Vec<String>, Error> {
-    let mut ret = Vec::new();
-    for dir in dirs_iter {
-        let expanded_dir: String = match &shellexpand::full(&dir) {
-            Ok(d) => d.as_ref().to_owned(),
-            Err(e) => {
-                if no_skip {
-                    return Err(format_err!("{}: Could not expand dir: {}", dir, e));
-                } else {
-                    warn!("{}: Skipping because expanding the path failed: {}", dir, e);
-                    continue;
-                }
-            }
-        };
-
-        match check_dir(&expanded_dir) {
-            Ok(chk_res) => {
-                if !chk_res.is_all_good() {
-                    ret.push(expanded_dir);
-                }
-            }
-            Err(e) => {
-                if no_skip {
-                    return Err(e);
-                } else {
-                    warn!(
-                        "{}: Skipping because checking failed unexpectedly: {}",
-                        dir, e
-                    );
-                    continue;
-                }
-            }
-        }
-    }
-    Ok(ret)
-}
-
 /// Returns false if any of the configured repos is dirty
 fn visit_all_repos(main_matches: &ArgMatches, cfg: &Config) -> Result<bool, Error> {
     let mut clean = true;
@@ -171,7 +139,7 @@ fn visit_all_repos(main_matches: &ArgMatches, cfg: &Config) -> Result<bool, Erro
 
         debug!("Visiting {}", expanded_dir);
 
-        let check_result = check_dir(expanded_dir)?;
+        let check_result = check_repo_in_dir(expanded_dir)?;
 
         if !check_result.is_all_good() || main_matches.is_present("verbose") {
             println!("{}: {}", dir, check_result.describe().join(" | "));
@@ -194,7 +162,7 @@ fn init_log() {
 }
 
 /// Load config from the path specified in `matches`.
-pub fn load_cfg(matches: &ArgMatches) -> Result<Config, Error> {
+pub fn load_cfg_from_matches(matches: &ArgMatches) -> Result<Config, Error> {
     let fname: &str = &shellexpand::full(
         matches
             .value_of("config")
@@ -214,7 +182,7 @@ pub fn load_cfg(matches: &ArgMatches) -> Result<Config, Error> {
 }
 
 /// Save `cfg` to the path specified in `matches`.
-pub fn save_cfg(matches: &ArgMatches, cfg: &Config) -> Result<(), Error> {
+pub fn save_cfg_from_matches(matches: &ArgMatches, cfg: &Config) -> Result<(), Error> {
     let fname: &str = &shellexpand::full(
         matches
             .value_of("config")

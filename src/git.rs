@@ -5,7 +5,7 @@ use git2::{Repository, RepositoryState, Status, StatusOptions};
 
 use std::path::Path;
 
-pub fn check_dir<P: AsRef<Path>>(dir: P) -> Result<GitCheckResult, Error> {
+pub fn check_repo_in_dir<P: AsRef<Path>>(dir: P) -> Result<GitCheckResult, Error> {
     let repo = Repository::discover(dir)?;
 
     let state = repo.state();
@@ -45,7 +45,7 @@ pub fn check_dir<P: AsRef<Path>>(dir: P) -> Result<GitCheckResult, Error> {
 
         repo.graph_ahead_behind(head_oid, remote_oid)?
     } else {
-	debug!("HEAD is not a branch, skipping ahead/behind...");
+        debug!("HEAD is not a branch, skipping ahead/behind...");
         (0, 0)
     };
 
