@@ -26,7 +26,7 @@ pub fn handle_add(
     )?;
 
     let p = fs::canonicalize(Path::new(dir))?;
-    if p.is_dir() {
+    if p.is_dir() && Repository::discover(&p).is_ok() {
         cfg.git.insert(
             p.to_str()
                 .ok_or_else(|| format_err!("INTERNAL: Could not convert path back to string"))?
@@ -35,7 +35,7 @@ pub fn handle_add(
         save_cfg_from_matches(main_matches, cfg)?;
         println!("Adding {}", p.to_str().unwrap());
     } else {
-        return Err(format_err!("{} is not a directory", dir).into());
+        return Err(format_err!("{} is not a git repo dir", dir).into());
     }
     Ok(())
 }
