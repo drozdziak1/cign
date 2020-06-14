@@ -9,6 +9,7 @@ pub struct Config {
     pub git: BTreeSet<String>,
     #[serde(default = "default_refresh_cmd")]
     pub refresh_cmd: String,
+    pub enable_chad: Option<String>,
 }
 
 #[inline]
@@ -21,6 +22,7 @@ impl Default for Config {
 	Config {
 	    git: BTreeSet::new(),
 	    refresh_cmd: default_refresh_cmd(),
+	    enable_chad: None,
 	}
     }
 }

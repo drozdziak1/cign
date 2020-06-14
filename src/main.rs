@@ -145,7 +145,11 @@ fn main() -> Result<(), ErrBox> {
         }
         ("", None) => {
             if visit_all_repos(&main_matches, &cfg)? {
-                println!("OK");
+                if cfg.enable_chad == Some("Yes.".to_owned()) {
+		    eprintln!("{}", include_str!("../assets/chad.txt"));
+                } else {
+                    eprintln!("OK");
+                }
             } else {
                 process::exit(1);
             }
