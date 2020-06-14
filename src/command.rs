@@ -134,21 +134,26 @@ pub fn handle_list(cfg: &Config) {
     println!("{}", cfg.git.iter().cloned().collect::<Vec<_>>().join("\n"));
 }
 
-pub fn handle_refresh(cfg: &Config) -> Result<(), Error> {
-    let expanded_dirs = get_expanded_dirs(cfg.git.iter(), false)?;
+pub fn handle_refresh(main_matches: &ArgMatches, cfg: &Config) -> Result<(), Error> {
+    let no_skip = main_matches.is_present("no-skip");
+    let expanded_dirs = get_expanded_dirs(cfg.git.iter(), no_skip)?;
 
     for (idx, dir) in expanded_dirs.iter().enumerate() {
         println!("[{}/{}] Refreshing {}:", idx + 1, expanded_dirs.len(), dir);
         let repo = match Repository::discover(&dir) {
             Ok(r) => r,
             Err(e) => {
-                warn!("{}: Skipping, opening the repo failed: {}", dir, e);
-                continue;
+                if no_skip {
+                    bail!("{}: Could not open repo: {}", dir, e);
+                } else {
+                    warn!("{}: Skipping, opening the repo failed: {}", dir, e);
+                    continue;
+                }
             }
         };
 
-	// Shell out for the configurable refresh command. Users might
-	// prefer something lighter than a full `git remote update`.
+        // Shell out for the configurable refresh command. Users might
+        // prefer something lighter than a full `git remote update`.
         let command_result: libc::c_int;
         unsafe {
             command_result = libc::WEXITSTATUS(libc::system(

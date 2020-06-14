@@ -141,7 +141,7 @@ fn main() -> Result<(), ErrBox> {
             command::handle_list(&mut cfg);
         }
         ("refresh", Some(_)) => {
-            command::handle_refresh(&mut cfg)?;
+            command::handle_refresh(&main_matches, &mut cfg)?;
         }
         ("", None) => {
             if visit_all_repos(&main_matches, &cfg)? {
