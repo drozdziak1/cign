@@ -17,6 +17,7 @@ use std::{
     env,
     fs::{File, OpenOptions},
     io::{Read, Write},
+    path::Path,
     process,
 };
 
@@ -88,6 +89,15 @@ fn main() -> Result<(), ErrBox> {
                 ),
         )
         .subcommand(
+            SubCommand::with_name("init").alias("i").about(
+                format!(
+                    "Initialize a default config in {}",
+                    DEFAULT_CIGN_CONFIG_PATH
+                )
+                .as_str(),
+            ),
+        )
+        .subcommand(
             SubCommand::with_name("list")
                 .alias("l")
                 .about("List all configured directories"),
@@ -98,6 +108,22 @@ fn main() -> Result<(), ErrBox> {
                 .about("Fetch upstream refs for every repo"),
         )
         .get_matches();
+
+    if let ("init", Some(_)) = main_matches.subcommand() {
+        let dir = Path::new(
+            main_matches
+                .value_of("config")
+                .ok_or_else(|| format_err!("INTERNAL: could not get config path"))?,
+        );
+
+        if dir.exists() {
+            println!("Config exists");
+            process::exit(1);
+        } else {
+            save_cfg_from_matches(&main_matches, &Default::default())?;
+            return Ok(());
+        }
+    }
 
     let mut cfg = load_cfg_from_matches(&main_matches)?;
 
@@ -189,7 +215,11 @@ pub fn save_cfg_from_matches(matches: &ArgMatches, cfg: &Config) -> Result<(), E
             .ok_or_else(|| format_err!("INTERNAL: could not obtain config path"))?,
     )?;
 
-    let mut f = OpenOptions::new().write(true).truncate(true).open(fname)?;
+    let mut f = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(fname)?;
 
     f.write_all(toml::to_vec(cfg)?.as_slice())?;
     Ok(())
