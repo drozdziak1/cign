@@ -6,7 +6,7 @@ use git2::{Repository, RepositoryState, Status, StatusOptions};
 use std::path::Path;
 
 pub fn check_repo_in_dir<P: AsRef<Path>>(dir: P) -> Result<GitCheckResult, Error> {
-    let repo = Repository::discover(dir)?;
+    let repo = Repository::discover(dir.as_ref())?;
 
     let state = repo.state();
     let statuses = repo
@@ -24,7 +24,16 @@ pub fn check_repo_in_dir<P: AsRef<Path>>(dir: P) -> Result<GitCheckResult, Error
         })
         .collect();
 
-    let head_ref = repo.head()?.resolve()?;
+    let head_ref = repo
+        .head()
+        .map_err(|e| {
+            format_err!(
+                "{}: Could not obtain HEAD. Does this repo have any commits? ({})",
+                dir.as_ref().to_str().unwrap_or("<not utf-8>"),
+		e
+            )
+        })?
+        .resolve()?;
 
     let (commits_ahead, commits_behind) = if head_ref.is_branch() {
         // Obtain head object ID
@@ -35,17 +44,28 @@ pub fn check_repo_in_dir<P: AsRef<Path>>(dir: P) -> Result<GitCheckResult, Error
         let branch_name = head_ref
             .name()
             .ok_or_else(|| format_err!("Failed to get HEAD branch name"))?;
-        let remote_branch_name = repo
-            .branch_upstream_name(branch_name)?
-            .as_str()
-            .ok_or_else(|| format_err!("Failed to decode remote branch name to UTF-8"))?
-            .to_owned();
+        if let Ok(remote_branch_name) = repo.branch_upstream_name(branch_name) {
+            let remote_branch_name = remote_branch_name
+                .as_str()
+                .ok_or_else(|| format_err!("Failed to decode remote branch name to UTF-8"))?
+                .to_owned();
 
-        let remote_oid = repo.refname_to_id(&remote_branch_name)?;
+            let remote_oid = repo.refname_to_id(&remote_branch_name)?;
 
-        repo.graph_ahead_behind(head_oid, remote_oid)?
+            repo.graph_ahead_behind(head_oid, remote_oid)?
+        } else {
+            info!(
+                "{}: {} does not appear to belong to a remote, skipping ahead/behind...",
+                dir.as_ref().to_str().unwrap_or("<not utf-8>"),
+                branch_name
+            );
+            (0, 0)
+        }
     } else {
-        debug!("HEAD is not a branch, skipping ahead/behind...");
+        debug!(
+            "{}: HEAD is not a branch, skipping ahead/behind...",
+            dir.as_ref().to_str().unwrap_or("<not utf-8>")
+        );
         (0, 0)
     };
 

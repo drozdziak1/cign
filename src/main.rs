@@ -169,13 +169,20 @@ fn visit_all_repos(main_matches: &ArgMatches, cfg: &Config) -> Result<bool, Erro
 
         debug!("Visiting {}", expanded_dir);
 
-        let check_result = check_repo_in_dir(expanded_dir)?;
+	match check_repo_in_dir(expanded_dir) {
+	    Ok(check_result) => {
+		if !check_result.is_all_good() || main_matches.is_present("verbose") {
+		    println!("{}: {}", dir, check_result.describe().join(" | "));
+		}
 
-        if !check_result.is_all_good() || main_matches.is_present("verbose") {
-            println!("{}: {}", dir, check_result.describe().join(" | "));
-        }
-
-        clean = clean && check_result.is_all_good();
+		clean = clean && check_result.is_all_good();
+	    }
+	    Err(e) => {
+		warn!("Checking {} failed unexpectedly: {}", dir, e);
+		clean = false;
+	    }
+	}
+	
     }
 
     Ok(clean)
