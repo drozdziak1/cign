@@ -6,6 +6,7 @@ extern crate serde_derive;
 
 mod command;
 mod config;
+mod custom;
 mod dir;
 mod git;
 
@@ -69,14 +70,30 @@ fn main() -> Result<(), ErrBox> {
                 ),
         )
         .subcommand(
+            SubCommand::with_name("add-custom")
+                .alias("ac")
+                .about("Prompt for a new custom directory to the config")
+                .arg(
+                    Arg::with_name("DIR")
+                        .default_value(".")
+                        .help("The custom directory to add"),
+                ),
+        )
+        .subcommand(
             SubCommand::with_name("del")
                 .alias("d")
-                .about("Removes a directory from the config")
+                .about("Remove a directory from the config")
                 .arg(
                     Arg::with_name("DIR")
                         .default_value(".")
                         .help("The directory to delete"),
                 ),
+        )
+        .subcommand(
+            SubCommand::with_name("del-custom")
+                .alias("dc")
+                .about("Remove a custom directory from the config")
+                .arg(Arg::with_name("NAME").help("The custom entry name to delete")),
         )
         .subcommand(
             SubCommand::with_name("fix")
@@ -131,11 +148,18 @@ fn main() -> Result<(), ErrBox> {
         ("add", Some(matches)) => {
             command::handle_add(&main_matches, matches, &mut cfg)?;
         }
+        ("add-custom", Some(matches)) => {
+            command::handle_add_custom(&main_matches, matches, &mut cfg)?;
+        }
         ("del", Some(matches)) => {
             command::handle_del(&main_matches, matches, &mut cfg)?;
         }
+        ("del-custom", Some(matches)) => {
+            command::handle_del_custom(&main_matches, matches, &mut cfg)?;
+        }
         ("fix", Some(matches)) => {
             command::handle_fix(&main_matches, matches, &mut cfg)?;
+            command::handle_fix_custom(&main_matches, matches, &mut cfg)?;
         }
         ("list", Some(_)) => {
             command::handle_list(&mut cfg);
@@ -146,7 +170,7 @@ fn main() -> Result<(), ErrBox> {
         ("", None) => {
             if visit_all_repos(&main_matches, &cfg)? {
                 if cfg.enable_chad == Some("Yes.".to_owned()) {
-		    eprintln!("{}", include_str!("../assets/chad.txt"));
+                    eprintln!("{}", include_str!("../assets/chad.txt"));
                 } else {
                     eprintln!("OK");
                 }
@@ -167,22 +191,44 @@ fn visit_all_repos(main_matches: &ArgMatches, cfg: &Config) -> Result<bool, Erro
     for dir in &cfg.git {
         let expanded_dir: &str = &shellexpand::full(dir)?;
 
-        debug!("Visiting {}", expanded_dir);
+        debug!("Visiting git repo {}", expanded_dir);
 
-	match check_repo_in_dir(expanded_dir) {
-	    Ok(check_result) => {
-		if !check_result.is_all_good() || main_matches.is_present("verbose") {
-		    println!("{}: {}", dir, check_result.describe().join(" | "));
-		}
+        match check_repo_in_dir(expanded_dir) {
+            Ok(check_result) => {
+                if !check_result.is_all_good() || main_matches.is_present("verbose") {
+                    println!("{}: {}", dir, check_result.describe().join(" | "));
+                }
 
-		clean = clean && check_result.is_all_good();
-	    }
-	    Err(e) => {
-		warn!("Checking {} failed unexpectedly: {}", dir, e);
-		clean = false;
-	    }
-	}
-	
+                clean = clean && check_result.is_all_good();
+            }
+            Err(e) => {
+                warn!("Checking {} failed unexpectedly: {}", dir, e);
+                clean = false;
+            }
+        }
+    }
+
+    for custom_entry in &cfg.custom {
+        debug!(
+            "Visiting custom dir {} ({})",
+            custom_entry.name, custom_entry.path
+        );
+
+        match custom_entry.check() {
+            Ok(res) => {
+                if !res {
+                    println!("{}: Dirty", custom_entry.name);
+                    clean = false;
+                } else if main_matches.is_present("verbose") {
+                    println!("{}: OK", custom_entry.path);
+                }
+            }
+            Err(e) => {
+                warn!("Checking {} failed unexpectedly: {}", custom_entry.name, e);
+
+                clean = false;
+            }
+        }
     }
 
     Ok(clean)
@@ -226,12 +272,14 @@ pub fn save_cfg_from_matches(matches: &ArgMatches, cfg: &Config) -> Result<(), E
             .ok_or_else(|| format_err!("INTERNAL: could not obtain config path"))?,
     )?;
 
+    let config_string = toml::to_vec(cfg)?;
+
     let mut f = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
         .open(fname)?;
 
-    f.write_all(toml::to_vec(cfg)?.as_slice())?;
+    f.write_all(config_string.as_slice())?;
     Ok(())
 }

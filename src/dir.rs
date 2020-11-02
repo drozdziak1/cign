@@ -2,7 +2,7 @@
 
 use failure::{format_err, Error};
 
-use crate::git::check_repo_in_dir;
+use crate::{custom::CustomEntry, git::check_repo_in_dir};
 
 /// Returns expanded directories from `dirs_iter`, with `no_skip`
 /// deciding if a failed expansion should filter the dir out or fail
@@ -55,10 +55,37 @@ pub fn get_failing_expanded_dirs<'a>(
                         "{}: Skipping because checking failed unexpectedly: {}",
                         expanded_dir, e
                     );
-                    continue;
                 }
             }
         }
     }
+    Ok(ret)
+}
+
+pub fn get_failing_custom_entries<'a>(
+    entries_iter: impl Iterator<Item = &'a CustomEntry>,
+    no_skip: bool,
+) -> Result<Vec<CustomEntry>, Error> {
+    let mut ret = Vec::<CustomEntry>::new();
+    for entry in entries_iter {
+        match entry.check() {
+            Ok(res) => {
+                if !res {
+                    ret.push(entry.clone());
+                }
+            }
+            Err(e) => {
+                if no_skip {
+                    return Err(e);
+                } else {
+                    warn!(
+                        "{}: Skipping because checking failed unexpectedly: {}",
+                        entry.name, e
+                    );
+                }
+            }
+        }
+    }
+
     Ok(ret)
 }

@@ -2,14 +2,19 @@
 
 use std::collections::BTreeSet;
 
+use crate::custom::CustomEntry;
+
 static DEFAULT_REFRESH_CMD: &'static str = "git remote update";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Config {
-    pub git: BTreeSet<String>,
     #[serde(default = "default_refresh_cmd")]
     pub refresh_cmd: String,
     pub enable_chad: Option<String>,
+    #[serde(default)]
+    pub git: BTreeSet<String>,
+    #[serde(default)]
+    pub custom: Vec<CustomEntry>,
 }
 
 #[inline]
@@ -19,10 +24,11 @@ fn default_refresh_cmd() -> String {
 
 impl Default for Config {
     fn default() -> Self {
-	Config {
-	    git: BTreeSet::new(),
-	    refresh_cmd: default_refresh_cmd(),
-	    enable_chad: None,
-	}
+        Config {
+            git: Default::default(),
+            custom: Default::default(),
+            refresh_cmd: default_refresh_cmd(),
+            enable_chad: None,
+        }
     }
 }
