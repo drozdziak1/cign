@@ -53,7 +53,14 @@ pub fn handle_del(
         bail!("No directory named {} in config", dir);
     };
 
-    save_cfg_from_matches(main_matches, cfg)?;
+    if Confirm::new()
+        .with_prompt(format!("Remove {}?", dir))
+        .interact()?
+    {
+        save_cfg_from_matches(main_matches, cfg)?;
+    } else {
+	bail!("Deletion not confirmed, bailing out.");
+    }
 
     Ok(())
 }
