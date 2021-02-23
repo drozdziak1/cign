@@ -1,6 +1,6 @@
-{sources ? import ./sources.nix, pkgs ? import sources.nixpkgs { }, rust ? import rust.nix { inherit sources;}}:
+{ sources ? import ./sources.nix, pkgs ? import sources.nixpkgs {} }:
 with pkgs; [
   openssl
   pkgconfig
   zlib
-] ++ [rust]
+]

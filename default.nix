@@ -1,24 +1,25 @@
-# import niv sources and the pinned nixpkgs
-{ sources ? import ./nix/sources.nix, pkgs ? import sources.nixpkgs { } }:
+{ system ? builtins.currentSystem
+, sources ? import nix/sources.nix
+, nixpkgs ? sources.nixpkgs
+, nixpkgsMozilla ? sources.nixpkgs-mozilla
+, cargo2nix ? sources.cargo2nix
+}:
 let
-  # import rust compiler
-  rust = import ./nix/rust.nix { inherit sources; };
+  rustOverlay = import "${nixpkgsMozilla}/rust-overlay.nix";
+  cargo2nixOverlay = import "${sources.cargo2nix}/overlay";
 
-  # configure naersk to use our pinned rust compiler
-  naersk = pkgs.callPackage sources.naersk {
-    rustc = rust;
-    cargo = rust;
+  pkgs = import <nixpkgs> {
+    inherit system;
+    overlays = [ cargo2nixOverlay rustOverlay ];
   };
 
-  common-deps = import ./nix/common-deps.nix { inherit sources pkgs rust; };
-
-  # tell nix-build to ignore the `target` directory
-  src = builtins.filterSource
-    (path: type: type != "directory" || builtins.baseNameOf path != "target")
-    ./.;
-in naersk.buildPackage {
-  inherit src;
-  remapPathPrefix =
-    true; # remove nix store references for a smaller output package
-  buildInputs = common-deps;
-}
+  rustPkgs = pkgs.rustBuilder.makePackageSet' {
+    rustChannel = "1.49.0";
+    packageFun = import ./Cargo.nix;
+    localPatterns = [
+      ''^(assets|src)(/.*)?''
+      ''[^/]*\.(rs|toml|txt)$''
+    ];
+  };
+in
+rustPkgs.workspace.cign {}
