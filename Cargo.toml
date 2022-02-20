@@ -13,14 +13,14 @@ categories = ["command-line-utilities", "filesystem", "development-tools"]
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-git2 = "0.13.6"
-toml = "0.5.6"
-serde = "1.0.111"
-serde_derive = "1.0.111"
-clap = "2.33.1"
-failure = "0.1.8"
-shellexpand = "2.0.0"
-log = "0.4.8"
-env_logger = "0.7.1"
-libc = "0.2.71"
-dialoguer = "0.6.2"
+git2 = "0.15"
+toml = "0.5.9"
+serde = "1"
+serde_derive = "1"
+clap = {version = "4", features = ["derive"]}
+failure = "0.1"
+shellexpand = "3.0"
+log = "0.4"
+env_logger = "0.9"
+libc = "0.2"
+dialoguer = "0.10"

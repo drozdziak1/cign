@@ -1,6 +1,7 @@
 //! Directory tools
 
 use failure::{format_err, Error};
+use log::warn;
 
 use crate::git::check_repo_in_dir;
 

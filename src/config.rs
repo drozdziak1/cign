@@ -1,5 +1,7 @@
 //! TOML config schema
 
+use serde_derive::{Serialize, Deserialize};
+
 use std::collections::BTreeSet;
 
 static DEFAULT_REFRESH_CMD: &'static str = "git remote update";

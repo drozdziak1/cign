@@ -1,23 +1,19 @@
-#[macro_use]
-extern crate log;
-
-#[macro_use]
-extern crate serde_derive;
-
+mod cli;
 mod command;
 mod config;
 mod dir;
 mod git;
 
-use clap::{App, Arg, ArgMatches, SubCommand};
-use failure::{format_err, Error};
-use log::LevelFilter;
+use clap::Parser;
+use cli::{Action, Cli};
+use failure::Error;
+use log::{debug, warn, LevelFilter};
 
 use std::{
     env,
-    fs::{File, OpenOptions},
+    fs::{self, File, OpenOptions},
     io::{Read, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process,
 };
 
@@ -26,127 +22,48 @@ use git::check_repo_in_dir;
 
 pub type ErrBox = Box<dyn std::error::Error>;
 
-static DEFAULT_CIGN_CONFIG_PATH: &'static str = "~/.cign.toml";
-
 fn main() -> Result<(), ErrBox> {
     init_log();
 
-    let current_shell = env::var("SHELL")?;
+    let cli = Cli::parse();
 
-    let main_matches = App::new(env!("CARGO_PKG_NAME"))
-        .about("cign = Can I Go Now? cign is a friendly reminder program for your unpushed code.")
-        .version(env!("CARGO_PKG_VERSION"))
-        .arg(
-            Arg::with_name("config")
-                .help("Path to cign configuration")
-                .short("c")
-                .long("config")
-                .value_name("CIGN_CONFIG")
-                .default_value(DEFAULT_CIGN_CONFIG_PATH),
-        )
-        .arg(
-            Arg::with_name("verbose")
-                .help("Print more info to stdout")
-                .short("v")
-                .long("verbose")
-                .takes_value(false),
-        )
-        .arg(
-            Arg::with_name("no-skip")
-                .help("Fail on errors instead of skipping when possible")
-                .short("s")
-                .long("no-skip")
-                .takes_value(false),
-        )
-        .subcommand(
-            SubCommand::with_name("add")
-                .alias("a")
-                .about("Add a new directory to the config")
-                .arg(
-                    Arg::with_name("DIR")
-                        .default_value(".")
-                        .help("The directory to add"),
-                ),
-        )
-        .subcommand(
-            SubCommand::with_name("del")
-                .alias("d")
-                .about("Removes a directory from the config")
-                .arg(
-                    Arg::with_name("DIR")
-                        .default_value(".")
-                        .help("The directory to delete"),
-                ),
-        )
-        .subcommand(
-            SubCommand::with_name("fix")
-                .alias("f")
-                .about("Run CMD in each dir to let the user get it back to clean state")
-                .arg(
-                    Arg::with_name("CMD")
-                        .default_value(&current_shell)
-                        .help("The command to run in each failing directory"),
-                ),
-        )
-        .subcommand(
-            SubCommand::with_name("init").alias("i").about(
-                format!(
-                    "Initialize a default config in {}",
-                    DEFAULT_CIGN_CONFIG_PATH
-                )
-                .as_str(),
-            ),
-        )
-        .subcommand(
-            SubCommand::with_name("list")
-                .alias("l")
-                .about("List all configured directories"),
-        )
-        .subcommand(
-            SubCommand::with_name("refresh")
-                .alias("r")
-                .about("Fetch upstream refs for every repo"),
-        )
-        .get_matches();
+    // Expand the config path
+    let config_path = Path::new(&*shellexpand::full(&cli.config_path)?).to_owned();
 
-    if let ("init", Some(_)) = main_matches.subcommand() {
-        let dir = Path::new(
-            main_matches
-                .value_of("config")
-                .ok_or_else(|| format_err!("INTERNAL: could not get config path"))?,
+    let mut cfg: Config = if config_path.exists() {
+        load_cfg(&config_path)?
+    } else {
+        println!(
+            "Config not found, initializing in {}...",
+            config_path.display()
         );
+        let cfg = Default::default();
+        save_cfg(&cfg, &config_path)?;
+        cfg
+    };
 
-        if dir.exists() {
-            println!("Config exists");
-            process::exit(1);
-        } else {
-            save_cfg_from_matches(&main_matches, &Default::default())?;
-            return Ok(());
+    match &cli.action {
+        Some(Action::Add { dir }) => {
+            let dir = fs::canonicalize(Path::new(&*shellexpand::full(&dir)?).to_owned())?;
+            command::handle_add(&mut cfg, &dir)?;
         }
-    }
-
-    let mut cfg = load_cfg_from_matches(&main_matches)?;
-
-    match main_matches.subcommand() {
-        ("add", Some(matches)) => {
-            command::handle_add(&main_matches, matches, &mut cfg)?;
+        Some(Action::Del { dir }) => {
+            let dir = fs::canonicalize(Path::new(&*shellexpand::full(&dir)?).to_owned())?;
+            command::handle_del(&mut cfg, &dir)?;
         }
-        ("del", Some(matches)) => {
-            command::handle_del(&main_matches, matches, &mut cfg)?;
+        Some(Action::Fix { cmd }) => {
+            command::handle_fix(&cfg, cmd, cli.no_skip)?;
         }
-        ("fix", Some(matches)) => {
-            command::handle_fix(&main_matches, matches, &mut cfg)?;
+        Some(Action::List) => {
+            command::handle_list(&cfg);
         }
-        ("list", Some(_)) => {
-            command::handle_list(&mut cfg);
+        Some(Action::Refresh) => {
+            command::handle_refresh(&cfg, cli.no_skip)?;
         }
-        ("refresh", Some(_)) => {
-            command::handle_refresh(&main_matches, &mut cfg)?;
-        }
-        ("", None) => {
-            if visit_all_repos(&main_matches, &cfg)? {
+        None => {
+            if check_all_repos(&cfg, cli.no_skip, cli.verbose)? {
                 if cfg.enable_chad == Some("Yes.".to_owned()) {
-		    eprintln!("{}", include_str!("../assets/chad.txt"));
+                    eprintln!("{}", include_str!("../assets/chad.txt"));
                 } else {
                     eprintln!("OK");
                 }
@@ -154,35 +71,40 @@ fn main() -> Result<(), ErrBox> {
                 process::exit(1);
             }
         }
-        _ => unreachable!(),
     }
+
+    save_cfg(&cfg, &config_path)?;
 
     Ok(())
 }
 
 /// Returns false if any of the configured repos is dirty
-fn visit_all_repos(main_matches: &ArgMatches, cfg: &Config) -> Result<bool, Error> {
+fn check_all_repos(cfg: &Config, no_skip: bool, verbose: bool) -> Result<bool, ErrBox> {
     let mut clean = true;
 
     for dir in &cfg.git {
-        let expanded_dir: &str = &shellexpand::full(dir)?;
+        let expanded_dir: PathBuf = Path::new(&*shellexpand::full(dir)?).to_owned();
 
-        debug!("Visiting {}", expanded_dir);
+        debug!("Visiting {}", expanded_dir.display());
 
-	match check_repo_in_dir(expanded_dir) {
-	    Ok(check_result) => {
-		if !check_result.is_all_good() || main_matches.is_present("verbose") {
-		    println!("{}: {}", dir, check_result.describe().join(" | "));
-		}
+        match check_repo_in_dir(expanded_dir.as_path()) {
+            Ok(check_result) => {
+                if !check_result.is_all_good() || verbose {
+                    println!("{}: {}", dir, check_result.describe().join(" | "));
+                }
 
-		clean = clean && check_result.is_all_good();
-	    }
-	    Err(e) => {
-		warn!("Checking {} failed unexpectedly: {}", dir, e);
-		clean = false;
-	    }
-	}
-	
+                if !check_result.is_all_good() && no_skip {
+                    println!("No-skip mode is on, exitting...");
+                    return Ok(false);
+                }
+
+                clean = clean && check_result.is_all_good();
+            }
+            Err(e) => {
+                warn!("Checking {} failed unexpectedly: {}", dir, e);
+                clean = false;
+            }
+        }
     }
 
     Ok(clean)
@@ -198,16 +120,10 @@ fn init_log() {
     }
 }
 
-/// Load config from the path specified in `matches`.
-pub fn load_cfg_from_matches(matches: &ArgMatches) -> Result<Config, Error> {
-    let fname: &str = &shellexpand::full(
-        matches
-            .value_of("config")
-            .ok_or_else(|| format_err!("INTERNAL: could not obtain config path"))?,
-    )?;
-
+/// Load config from the specified path.
+pub fn load_cfg(cfg_path: &Path) -> Result<Config, Error> {
     let mut buf = String::new();
-    let mut file = File::open(fname)?;
+    let mut file = File::open(cfg_path)?;
 
     file.read_to_string(&mut buf)?;
 
@@ -219,18 +135,12 @@ pub fn load_cfg_from_matches(matches: &ArgMatches) -> Result<Config, Error> {
 }
 
 /// Save `cfg` to the path specified in `matches`.
-pub fn save_cfg_from_matches(matches: &ArgMatches, cfg: &Config) -> Result<(), Error> {
-    let fname: &str = &shellexpand::full(
-        matches
-            .value_of("config")
-            .ok_or_else(|| format_err!("INTERNAL: could not obtain config path"))?,
-    )?;
-
+pub fn save_cfg(cfg: &Config, cfg_path: &Path) -> Result<(), Error> {
     let mut f = OpenOptions::new()
         .write(true)
         .create(true)
         .truncate(true)
-        .open(fname)?;
+        .open(cfg_path)?;
 
     f.write_all(toml::to_vec(cfg)?.as_slice())?;
     Ok(())

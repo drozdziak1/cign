@@ -1,81 +1,49 @@
 //! Command handlers for CLI subcommands
 
-use clap::ArgMatches;
 use dialoguer::Confirm;
-use failure::{bail, format_err, Error};
 use git2::Repository;
+use log::warn;
 
-use std::{env, ffi, fs, path::Path};
+use std::{env, ffi, path::Path};
 
 use crate::{
     config::Config,
     dir::{get_expanded_dirs, get_failing_expanded_dirs},
     git::check_repo_in_dir,
-    save_cfg_from_matches,
+    ErrBox,
 };
 
-pub fn handle_add(
-    main_matches: &ArgMatches,
-    matches: &ArgMatches,
-    cfg: &mut Config,
-) -> Result<(), Error> {
-    let dir: &str = &shellexpand::full(
-        matches
-            .value_of("DIR")
-            .ok_or_else(|| format_err!("INTERNAL: Could not get dir to add"))?,
-    )?;
-
-    let p = fs::canonicalize(Path::new(dir))?;
-    if p.is_dir() && Repository::discover(&p).is_ok() {
-        cfg.git.insert(
-            p.to_str()
-                .ok_or_else(|| format_err!("INTERNAL: Could not convert path back to string"))?
-                .to_owned(),
-        );
-        save_cfg_from_matches(main_matches, cfg)?;
-        println!("Adding {}", p.to_str().unwrap());
+pub fn handle_add(cfg: &mut Config, new_dir: &Path) -> Result<(), ErrBox> {
+    if new_dir.is_dir() && Repository::discover(new_dir).is_ok() {
+        cfg.git.insert(new_dir.display().to_string());
+        println!("Adding {}", new_dir.to_str().unwrap());
     } else {
-        return Err(format_err!("{} is not a git repo dir", dir).into());
+        return Err(format!("{} is not a git repo dir", new_dir.display()).into());
     }
     Ok(())
 }
 
-pub fn handle_del(
-    main_matches: &ArgMatches,
-    matches: &ArgMatches,
-    cfg: &mut Config,
-) -> Result<(), Error> {
-    let dir = matches
-        .value_of("DIR")
-        .ok_or_else(|| format_err!("INTERNAL: Could not get dir to delete"))?;
-
-    if !cfg.git.remove(dir) {
-        bail!("No directory named {} in config", dir);
+pub fn handle_del(cfg: &mut Config, dir_to_delete: &Path) -> Result<(), ErrBox> {
+    if !cfg
+        .git
+        .contains(dir_to_delete.display().to_string().as_str())
+    {
+        return Err(format!("{} not in config", dir_to_delete.display()).into());
     };
 
     if Confirm::new()
-        .with_prompt(format!("Remove {}?", dir))
+        .with_prompt(format!("Remove {}?", dir_to_delete.display()))
         .interact()?
     {
-        save_cfg_from_matches(main_matches, cfg)?;
+        cfg.git.remove(dir_to_delete.display().to_string().as_str());
+        Ok(())
     } else {
-	bail!("Deletion not confirmed, bailing out.");
+        return Err("Deletion not confirmed, bailing out.".into());
     }
-
-    Ok(())
 }
 
-pub fn handle_fix(
-    main_matches: &ArgMatches,
-    matches: &ArgMatches,
-    cfg: &mut Config,
-) -> Result<(), Error> {
-    let cmd = matches
-        .value_of("CMD")
-        .ok_or_else(|| format_err!("INTERNAL: could not get CMD"))?;
-
-    let failing_expanded_dirs =
-        get_failing_expanded_dirs(cfg.git.iter(), main_matches.is_present("no-skip"))?;
+pub fn handle_fix(cfg: &Config, fix_cmd: &str, no_skip: bool) -> Result<(), ErrBox> {
+    let failing_expanded_dirs = get_failing_expanded_dirs(cfg.git.iter(), no_skip)?;
 
     // Save current dir
     let cwd = env::current_dir()?;
@@ -96,7 +64,8 @@ pub fn handle_fix(
             // Run the command
             let command_result: libc::c_int;
             unsafe {
-                command_result = libc::WEXITSTATUS(libc::system(ffi::CString::new(cmd)?.as_ptr()));
+                command_result =
+                    libc::WEXITSTATUS(libc::system(ffi::CString::new(fix_cmd)?.as_ptr()));
             }
 
             if command_result != libc::EXIT_SUCCESS {
@@ -141,8 +110,7 @@ pub fn handle_list(cfg: &Config) {
     println!("{}", cfg.git.iter().cloned().collect::<Vec<_>>().join("\n"));
 }
 
-pub fn handle_refresh(main_matches: &ArgMatches, cfg: &Config) -> Result<(), Error> {
-    let no_skip = main_matches.is_present("no-skip");
+pub fn handle_refresh(cfg: &Config, no_skip: bool) -> Result<(), ErrBox> {
     let expanded_dirs = get_expanded_dirs(cfg.git.iter(), no_skip)?;
 
     for (idx, dir) in expanded_dirs.iter().enumerate() {
@@ -151,7 +119,7 @@ pub fn handle_refresh(main_matches: &ArgMatches, cfg: &Config) -> Result<(), Err
             Ok(r) => r,
             Err(e) => {
                 if no_skip {
-                    bail!("{}: Could not open repo: {}", dir, e);
+                    return Err(format!("{}: Could not open repo: {}", dir, e).into());
                 } else {
                     warn!("{}: Skipping, opening the repo failed: {}", dir, e);
                     continue;

@@ -2,6 +2,7 @@
 
 use failure::{format_err, Error};
 use git2::{Repository, RepositoryState, Status, StatusOptions};
+use log::{debug, info, trace};
 
 use std::path::Path;
 
@@ -30,7 +31,7 @@ pub fn check_repo_in_dir<P: AsRef<Path>>(dir: P) -> Result<GitCheckResult, Error
             format_err!(
                 "{}: Could not obtain HEAD. Does this repo have any commits? ({})",
                 dir.as_ref().to_str().unwrap_or("<not utf-8>"),
-		e
+                e
             )
         })?
         .resolve()?;
