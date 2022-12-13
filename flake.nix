@@ -19,7 +19,7 @@
           };
 
           rustChannel = "1.61.0";
-          rustPkgs = pkgs.rustBuilder.makePackageSet' {
+          rustPkgs = pkgs.rustBuilder.makePackageSet {
             inherit rustChannel;
             packageFun = import ./Cargo.nix;
             packageOverrides = pkgs: pkgs.rustBuilder.overrides.all;
