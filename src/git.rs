@@ -1,82 +1,11 @@
 //! Git directory checking helpers
 
-use failure::{format_err, Error};
 use git2::{Repository, RepositoryState, Status, StatusOptions};
-use log::{debug, info, trace};
+use log::{debug, trace};
 
-use std::path::Path;
+use std::{collections::VecDeque, fs, path::Path};
 
-pub fn check_repo_in_dir<P: AsRef<Path>>(dir: P) -> Result<GitCheckResult, Error> {
-    let repo = Repository::discover(dir.as_ref())?;
-
-    let state = repo.state();
-    let statuses = repo
-        .statuses(Some(StatusOptions::new().include_ignored(false)))?
-        .iter()
-        .map(|entry| {
-            let status = entry.status();
-            trace!(
-                "{:?}: {:?}: status {:?}",
-                repo.workdir(),
-                entry.path(),
-                status
-            );
-            status
-        })
-        .collect();
-
-    let head_ref = repo
-        .head()
-        .map_err(|e| {
-            format_err!(
-                "{}: Could not obtain HEAD. Does this repo have any commits? ({})",
-                dir.as_ref().to_str().unwrap_or("<not utf-8>"),
-                e
-            )
-        })?
-        .resolve()?;
-
-    let (commits_ahead, commits_behind) = if head_ref.is_branch() {
-        // Obtain head object ID
-        let head_oid = head_ref
-            .target()
-            .ok_or_else(|| format_err!("Failed to resolve HEAD ref"))?;
-
-        let branch_name = head_ref
-            .name()
-            .ok_or_else(|| format_err!("Failed to get HEAD branch name"))?;
-        if let Ok(remote_branch_name) = repo.branch_upstream_name(branch_name) {
-            let remote_branch_name = remote_branch_name
-                .as_str()
-                .ok_or_else(|| format_err!("Failed to decode remote branch name to UTF-8"))?
-                .to_owned();
-
-            let remote_oid = repo.refname_to_id(&remote_branch_name)?;
-
-            repo.graph_ahead_behind(head_oid, remote_oid)?
-        } else {
-            info!(
-                "{}: {} does not appear to belong to a remote, skipping ahead/behind...",
-                dir.as_ref().to_str().unwrap_or("<not utf-8>"),
-                branch_name
-            );
-            (0, 0)
-        }
-    } else {
-        debug!(
-            "{}: HEAD is not a branch, skipping ahead/behind...",
-            dir.as_ref().to_str().unwrap_or("<not utf-8>")
-        );
-        (0, 0)
-    };
-
-    Ok(GitCheckResult {
-        state,
-        statuses,
-        commits_ahead,
-        commits_behind,
-    })
-}
+use crate::ErrBox;
 
 /// Encapsulates different things that can fail when checking a repo.
 #[derive(Clone, Debug)]
@@ -125,4 +54,115 @@ impl GitCheckResult {
 
         ret
     }
+}
+
+pub fn check_repo(repo: &Repository) -> Result<GitCheckResult, ErrBox> {
+    let state = repo.state();
+    let statuses = repo
+        .statuses(Some(StatusOptions::new().include_ignored(false)))?
+        .iter()
+        .map(|entry| {
+            let status = entry.status();
+            trace!(
+                "{:?}: {:?}: status {:?}",
+                repo.workdir(),
+                entry.path(),
+                status
+            );
+            status
+        })
+        .collect();
+
+    let head = match repo.head() {
+        Ok(h) => h,
+        Err(e) => {
+            debug!(
+                "{}: SKIP NO HEAD (no commits in repo?)",
+                repo.workdir().unwrap_or(repo.path()).display(),
+            );
+            trace!(
+                "{}: {}",
+                repo.workdir().unwrap_or(repo.path()).display(),
+                e.to_string()
+            );
+            return Ok(GitCheckResult {
+                state,
+                statuses: vec![],
+                commits_ahead: 0,
+                commits_behind: 0,
+            });
+        }
+    };
+
+    let head_ref = head.resolve()?;
+
+    let (commits_ahead, commits_behind) = if head_ref.is_branch() {
+        // Obtain head object ID
+        let head_oid = head_ref
+            .target()
+            .ok_or_else(|| -> ErrBox { format!("Failed to resolve HEAD ref").into() })?;
+
+        let branch_name = head_ref
+            .name()
+            .ok_or_else(|| -> ErrBox { format!("Failed to get HEAD branch name").into() })?;
+        if let Ok(remote_branch_name) = repo.branch_upstream_name(branch_name) {
+            let remote_branch_name = remote_branch_name
+                .as_str()
+                .ok_or_else(|| -> ErrBox {
+                    format!("Failed to decode remote branch name to UTF-8").into()
+                })?
+                .to_owned();
+
+            let remote_oid = repo.refname_to_id(&remote_branch_name)?;
+
+            repo.graph_ahead_behind(head_oid, remote_oid)?
+        } else {
+            debug!(
+                "{}: SKIP NO REMOTE FOR {}",
+                repo.workdir().unwrap_or(repo.path()).display(),
+                branch_name
+            );
+            (0, 0)
+        }
+    } else {
+        debug!("{}: SKIP HEAD DETACHED ", repo.path().display());
+        (0, 0)
+    };
+
+    Ok(GitCheckResult {
+        state,
+        statuses,
+        commits_ahead,
+        commits_behind,
+    })
+}
+
+pub fn find_git_repos_recursive<P: AsRef<Path>>(dir: P) -> Result<Vec<Repository>, ErrBox> {
+    let mut stack = VecDeque::new();
+    stack.push_back(dir.as_ref().to_owned());
+    let mut found_repos = Vec::new();
+
+    while let Some(cur_path) = stack.pop_front() {
+        if cur_path.is_dir() {
+            match Repository::discover(cur_path.clone()) {
+                Ok(r) => {
+                    trace!("HIT {}", cur_path.display());
+                    found_repos.push(r);
+                }
+                Err(e) => {
+                    trace!("MISS {} ERR {}", cur_path.display(), e.to_string());
+
+                    let contents = fs::read_dir(cur_path)?
+                        .map(|e_res| e_res.map(|e| e.path()))
+                        .collect::<Result<Vec<_>, _>>()?;
+
+                    stack.extend(contents);
+                }
+            }
+        } else {
+            trace!("MISS {} NON-DIR", cur_path.display());
+        }
+    }
+
+    Ok(found_repos)
 }

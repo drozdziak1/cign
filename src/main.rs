@@ -18,7 +18,9 @@ use std::{
 };
 
 use config::Config;
-use git::check_repo_in_dir;
+use git::check_repo;
+
+use crate::git::find_git_repos_recursive;
 
 pub type ErrBox = Box<dyn std::error::Error>;
 
@@ -81,27 +83,47 @@ fn main() -> Result<(), ErrBox> {
 /// Returns false if any of the configured repos is dirty
 fn check_all_repos(cfg: &Config, no_skip: bool, verbose: bool) -> Result<bool, ErrBox> {
     let mut clean = true;
+    let all_repos = cfg
+        .git
+        .iter()
+        .map(|d| {
+            shellexpand::full(d)
+                .map_err(|e| -> ErrBox { e.into() })
+                .and_then(|expanded| find_git_repos_recursive(PathBuf::from(expanded.as_ref())))
+                .map_err(|e| {
+                    warn!("Could not look for git repos in {}: {} ", d, e.to_string());
+                    e
+                })
+        })
+        .filter_map(|res| res.ok())
+        .flatten();
 
-    for dir in &cfg.git {
-        let expanded_dir: PathBuf = Path::new(&*shellexpand::full(dir)?).to_owned();
-
-        debug!("Visiting {}", expanded_dir.display());
-
-        match check_repo_in_dir(expanded_dir.as_path()) {
+    for repo in all_repos {
+	let repo_dir = repo.workdir().unwrap_or(repo.path());
+        debug!("Visiting {}", repo_dir.display());
+        match check_repo(&repo) {
             Ok(check_result) => {
                 if !check_result.is_all_good() || verbose {
-                    println!("{}: {}", dir, check_result.describe().join(" | "));
+                    println!(
+                        "{}: {}",
+                        repo_dir.display(),
+                        check_result.describe().join(" | ")
+                    );
                 }
 
                 if !check_result.is_all_good() && no_skip {
-                    println!("No-skip mode is on, exitting...");
+                    println!("No-skip mode is on, exiting...");
                     return Ok(false);
                 }
 
                 clean = clean && check_result.is_all_good();
             }
             Err(e) => {
-                warn!("Checking {} failed unexpectedly: {}", dir, e);
+                warn!(
+                    "Checking {} failed unexpectedly: {}",
+		    repo_dir.display(),
+                    e
+                );
                 clean = false;
             }
         }

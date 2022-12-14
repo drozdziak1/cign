@@ -9,18 +9,18 @@ use std::{env, ffi, path::Path};
 use crate::{
     config::Config,
     dir::{get_expanded_dirs, get_failing_expanded_dirs},
-    git::check_repo_in_dir,
+    git::check_repo,
     ErrBox,
 };
 
 pub fn handle_add(cfg: &mut Config, new_dir: &Path) -> Result<(), ErrBox> {
-    if new_dir.is_dir() && Repository::discover(new_dir).is_ok() {
+    if new_dir.is_dir() {
         cfg.git.insert(new_dir.display().to_string());
         println!("Adding {}", new_dir.to_str().unwrap());
+        Ok(())
     } else {
-        return Err(format!("{} is not a git repo dir", new_dir.display()).into());
+        Err(format!("{} is not a directory", new_dir.display()).into())
     }
-    Ok(())
 }
 
 pub fn handle_del(cfg: &mut Config, dir_to_delete: &Path) -> Result<(), ErrBox> {
@@ -50,6 +50,7 @@ pub fn handle_fix(cfg: &Config, fix_cmd: &str, no_skip: bool) -> Result<(), ErrB
 
     // Go through each failing dir executing CMD
     for (idx, dir) in failing_expanded_dirs.iter().enumerate() {
+        let repo = Repository::discover(dir)?;
         loop {
             // Change to the directory
             env::set_current_dir(Path::new(&dir))?;
@@ -73,7 +74,7 @@ pub fn handle_fix(cfg: &Config, fix_cmd: &str, no_skip: bool) -> Result<(), ErrB
             }
 
             // Re-run the check
-            let check_res = check_repo_in_dir(dir)?;
+            let check_res = check_repo(&repo)?;
 
             // Loop back if it's still failing and they want to retry
             if !check_res.is_all_good() {

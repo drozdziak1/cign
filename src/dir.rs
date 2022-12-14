@@ -1,9 +1,10 @@
 //! Directory tools
 
 use failure::{format_err, Error};
+use git2::Repository;
 use log::warn;
 
-use crate::git::check_repo_in_dir;
+use crate::{git::check_repo, ErrBox};
 
 /// Returns expanded directories from `dirs_iter`, with `no_skip`
 /// deciding if a failed expansion should filter the dir out or fail
@@ -38,11 +39,14 @@ pub fn get_expanded_dirs<'a>(
 pub fn get_failing_expanded_dirs<'a>(
     dirs_iter: impl Iterator<Item = &'a String>,
     no_skip: bool,
-) -> Result<Vec<String>, Error> {
+) -> Result<Vec<String>, ErrBox> {
     let mut ret = Vec::new();
     let expanded_dirs = get_expanded_dirs(dirs_iter, no_skip)?;
     for expanded_dir in expanded_dirs {
-        match check_repo_in_dir(&expanded_dir) {
+        match Repository::discover(expanded_dir.clone())
+            .map_err(|e| -> ErrBox { e.into() })
+            .and_then(|r| check_repo(&r))
+        {
             Ok(chk_res) => {
                 if !chk_res.is_all_good() {
                     ret.push(expanded_dir);
