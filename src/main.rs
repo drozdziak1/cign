@@ -5,7 +5,7 @@ mod dir;
 mod git;
 
 use clap::Parser;
-use cli::{Action, Cli};
+use cli_table::{format::Separator, Cell, Table};
 use failure::Error;
 use log::{debug, warn, LevelFilter};
 
@@ -17,10 +17,10 @@ use std::{
     process,
 };
 
-use config::Config;
-use git::check_repo;
-
 use crate::git::find_git_repos_recursive;
+use cli::{Action, Cli};
+use config::Config;
+use git::{check_repo, GitCheckResult};
 
 pub type ErrBox = Box<dyn std::error::Error>;
 
@@ -63,15 +63,58 @@ fn main() -> Result<(), ErrBox> {
             command::handle_refresh(&cfg, cli.no_skip)?;
         }
         None => {
-            if check_all_repos(&cfg, cli.no_skip, cli.verbose)? {
+            let mut results = check_all_repos(&cfg)?;
+
+            let (mut good_repos, bad_repos): (Vec<_>, Vec<_>) =
+                results.drain(..).partition(|result| result.1.is_all_good());
+
+            let table_separator = Separator::builder()
+                .title(Some(Default::default()))
+                .row(None)
+                .column(Some(Default::default()))
+                .build();
+
+            if bad_repos.is_empty() {
                 if cfg.enable_chad == Some("Yes.".to_owned()) {
                     eprintln!("{}", include_str!("../assets/chad.txt"));
                 } else {
                     eprintln!("OK");
                 }
             } else {
-                process::exit(1);
+                let mut table_rows = vec![];
+                for (bad_path, bad_result) in bad_repos.clone() {
+                    let row = vec![
+                        format!("{}", bad_path.display()).cell(),
+                        bad_result.describe().join(" - ").cell(),
+                    ];
+                    table_rows.push(row);
+                }
+
+                let table = table_rows
+                    .table()
+                    .title(vec!["Path".cell(), "Problem".cell()])
+                    .separator(table_separator);
+
+                println!("{}", table.display()?);
             }
+
+            if cli.verbose {
+                let table_rows: Vec<_> = good_repos
+                    .drain(..)
+                    .map(|(p, _r)| vec![format!("{}", p.display()).cell()])
+                    .collect();
+
+                let table = table_rows
+                    .table()
+                    .title(vec!["Clean Repos"])
+                    .separator(table_separator);
+
+                println!("{}", table.display()?);
+            }
+
+	    if !bad_repos.is_empty() {
+                process::exit(1);
+	    }
         }
     }
 
@@ -81,8 +124,7 @@ fn main() -> Result<(), ErrBox> {
 }
 
 /// Returns false if any of the configured repos is dirty
-fn check_all_repos(cfg: &Config, no_skip: bool, verbose: bool) -> Result<bool, ErrBox> {
-    let mut clean = true;
+fn check_all_repos(cfg: &Config) -> Result<Vec<(PathBuf, GitCheckResult)>, ErrBox> {
     let all_repos = cfg
         .git
         .iter()
@@ -98,38 +140,22 @@ fn check_all_repos(cfg: &Config, no_skip: bool, verbose: bool) -> Result<bool, E
         .filter_map(|res| res.ok())
         .flatten();
 
+    let mut results = Vec::new();
+
     for repo in all_repos {
-	let repo_dir = repo.workdir().unwrap_or(repo.path());
+        let repo_dir = repo.workdir().unwrap_or(repo.path());
         debug!("Visiting {}", repo_dir.display());
         match check_repo(&repo) {
             Ok(check_result) => {
-                if !check_result.is_all_good() || verbose {
-                    println!(
-                        "{}: {}",
-                        repo_dir.display(),
-                        check_result.describe().join(" | ")
-                    );
-                }
-
-                if !check_result.is_all_good() && no_skip {
-                    println!("No-skip mode is on, exiting...");
-                    return Ok(false);
-                }
-
-                clean = clean && check_result.is_all_good();
+                results.push((PathBuf::from(repo_dir), check_result));
             }
             Err(e) => {
-                warn!(
-                    "Checking {} failed unexpectedly: {}",
-		    repo_dir.display(),
-                    e
-                );
-                clean = false;
+                warn!("Checking {} failed unexpectedly: {}", repo_dir.display(), e);
             }
         }
     }
 
-    Ok(clean)
+    Ok(results)
 }
 
 /// Init logging at info level
