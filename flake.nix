@@ -2,7 +2,7 @@
   description = "cign - the tool that checks if you can go now";
 
   inputs = {
-    nixpkgs.url = github:NixOS/nixpkgs/release-22.11;
+    nixpkgs.url = github:NixOS/nixpkgs/release-23.05;
     rust-overlay.url = github:oxalica/rust-overlay;
     flake-utils.url = github:numtide/flake-utils;
     cargo2nix.url = github:cargo2nix/cargo2nix;
@@ -14,11 +14,11 @@
         let
           lib = (import nixpkgs { inherit system; }).lib;
           pkgs = import nixpkgs {
-            overlays = [cargo2nix.overlays.default];
+            overlays = [cargo2nix.overlays.default rust-overlay.overlays.default];
             inherit system;
           };
 
-          rustChannel = "1.61.0";
+          rustChannel = "1.71.0";
           rustPkgs = pkgs.rustBuilder.makePackageSet {
             inherit rustChannel;
             packageFun = import ./Cargo.nix;
